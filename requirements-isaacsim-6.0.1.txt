@@ -1,0 +1,7 @@
+# Direct dependencies for Isaac Sim 6.0.1 on Python 3.12.
+# Install all three matching CUDA wheels first from the cu128 PyTorch index.
+# Install Isaac packages with --extra-index-url https://pypi.nvidia.com.
+torch==2.11.0+cu128
+torchvision==0.26.0+cu128
+torchaudio==2.11.0+cu128
+isaacsim[all,extscache]==6.0.1.0
