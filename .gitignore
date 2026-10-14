@@ -1,0 +1,27 @@
+# Installed environments and generated simulation data stay on the server.
+/.venv*
+/.runtime/
+/.cache/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+logs/
+*.log
+*.log.*
+core
+core.*
+
+# Credentials and private local settings must not be published.
+.env
+.env.*
+!.env.example
+!.env.sample
+.ssh/
+.aws/
+.secrets/
+.git-credentials
+.netrc
+*.pem
+*.key
