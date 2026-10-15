@@ -35,7 +35,7 @@ def wait_for_assets(update: Callable[[], None], timeout: float = 600.0) -> None:
         update()
 
 
-def build_scene(update: Callable[[], None], asset_usd: str | None = None) -> tuple[Usd.Stage, Articulation, object, dict[str, object]]:
+def build_scene(update: Callable[[], None], asset_usd: str | None = None, *, ground_size: float = 10.0) -> tuple[Usd.Stage, Articulation, object, dict[str, object]]:
     stage = omni.usd.get_context().get_stage()
     if stage is None:
         raise RuntimeError("SimulationApp did not create a USD stage")
@@ -52,7 +52,7 @@ def build_scene(update: Callable[[], None], asset_usd: str | None = None) -> tup
     scene_api.CreateBroadphaseTypeAttr().Set("MBP")
     scene_api.CreateSolverTypeAttr().Set("TGS")
 
-    GroundPlane(GROUND_PATH, sizes=10.0, colors=[0.32, 0.36, 0.40], templates=None)
+    GroundPlane(GROUND_PATH, sizes=ground_size, colors=[0.32, 0.36, 0.40], templates=None)
     ground_colliders = [str(prim.GetPath()) for prim in Usd.PrimRange(stage.GetPrimAtPath(GROUND_PATH))
                         if prim.HasAPI(UsdPhysics.CollisionAPI)]
     if not ground_colliders:
@@ -108,6 +108,7 @@ def build_scene(update: Callable[[], None], asset_usd: str | None = None) -> tup
         "disabled_embedded_physics_scenes": disabled_scenes,
         "spawn_offset_m": spawn_offset,
         "ground_height_m": 0.0,
+        "ground_visual_size_m": ground_size,
         "gravity_m_s2": 9.81,
         "camera_path": CAMERA_PATH,
         "physics_device": "cpu",
@@ -116,3 +117,12 @@ def build_scene(update: Callable[[], None], asset_usd: str | None = None) -> tup
     }
     print(f"G1_SCENE_CREATED dofs={robot.num_dofs} colliders={len(robot_colliders)}", flush=True)
     return stage, robot, viewport, metadata
+
+
+def follow_camera(stage: Usd.Stage, position) -> None:
+    """Move the existing overview camera while keeping a fixed world heading."""
+    x, y, _ = position
+    camera = UsdGeom.Xformable(stage.GetPrimAtPath(CAMERA_PATH))
+    camera.GetOrderedXformOps()[0].Set(
+        Gf.Matrix4d().SetLookAt(Gf.Vec3d(x + 2.6, y + 2.6, 1.6),
+                              Gf.Vec3d(x, y, 0.65), Gf.Vec3d(0, 0, 1)).GetInverse())
