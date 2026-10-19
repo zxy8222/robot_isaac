@@ -1,0 +1,13 @@
+Official source: https://github.com/unitreerobotics/unitree_rl_lab
+Pinned commit: 4960b84732b0c2ec593dccbfe963fda1bcd7b1e3
+
+The upstream README identifies the project license as Apache-2.0:
+https://www.apache.org/licenses/LICENSE-2.0
+
+Deployment reference files carry this notice:
+Copyright (c) 2025, Unitree Robotics Co., Ltd. All rights reserved.
+
+The robot configuration carries SPDX-License-Identifier: BSD-3-Clause.
+The upstream doc/licenses/isaaclab-license.txt and the reference files are
+retained by scripts/fetch_g1_onnx.py in the pinned local source cache.
+The original policy and reference files are downloaded without modification.

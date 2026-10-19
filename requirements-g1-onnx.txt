@@ -1,0 +1,4 @@
+# CPU inference for the official G1 RL Lab ONNX deployment, Python 3.12.
+onnxruntime==1.23.2
+PyYAML==6.0.3
+protobuf==6.33.5

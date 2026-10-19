@@ -27,11 +27,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--steps", type=int, help="Default: 5000 walking, 2000 standing, 600 scene-check steps")
     parser.add_argument("--dt", type=float, help="Default: 0.002 s walking, 0.005 s standing, 1/60 s scene check")
-    parser.add_argument("--asset-usd", help="Optional local or remote G1_23dof USD override")
+    parser.add_argument("--asset-usd", help="Optional local or remote G1 USD override")
+    parser.add_argument("--robot", choices=("nvidia", "unitree12", "unitree29"), default="nvidia",
+                        help="NVIDIA G1_23dof (default), official 12-DOF G1, or official 29-DOF mode 15")
     parser.add_argument("--controller", choices=("walk", "stand", "none"), default="stand")
     parser.add_argument("--command", nargs=3, type=float, default=(0.5, 0.0, 0.0),
                         metavar=("VX", "VY", "YAW_RATE"), help="Walking body-frame velocity: m/s, m/s, rad/s")
-    parser.add_argument("--policy-path", type=Path, help="Verified official motion.pt; default is the pinned local cache")
+    parser.add_argument("--policy-path", type=Path, help="Verified official motion.pt or Mode-15 policy.onnx; defaults to pinned cache")
     parser.add_argument("--video", action="store_true", help="Record a measured 25 fps, 1x playback MP4")
     args = parser.parse_args()
     if args.steps is None:
@@ -59,6 +61,27 @@ def parse_args() -> argparse.Namespace:
             parser.error("25 fps video requires dt and steps divisible by the 0.04 s frame interval")
     if args.asset_usd is not None and not args.asset_usd.strip():
         parser.error("--asset-usd must not be empty")
+    if args.robot == "unitree12":
+        if args.controller == "stand":
+            parser.error("The 12-DOF model supports --controller walk or none")
+        if args.asset_usd is None:
+            from g1_models import DEFAULT_UNITREE_USD
+
+            if not DEFAULT_UNITREE_USD.is_file():
+                parser.error("Import the official asset with scripts/import_g1_12dof.py first")
+            args.asset_usd = str(DEFAULT_UNITREE_USD)
+    elif args.robot == "unitree29":
+        if args.controller == "stand":
+            parser.error("Mode 15 supports --controller walk or none")
+        if args.controller == "walk" and abs(args.command[2]) > .2:
+            parser.error("Official Mode-15 ONNX deployment requires |YAW_RATE| <= 0.2")
+        if args.asset_usd is None:
+            from g1_urdf_config import URDF_MODELS
+
+            asset = URDF_MODELS["unitree29"].asset_path
+            if not asset.is_file():
+                parser.error("Import the official asset with scripts/import_g1_29dof.py first")
+            args.asset_usd = str(asset)
     allowed_root = Path(__file__).resolve().parents[1] / ".runtime/isaacsim-6.0.1/outputs"
     args.output_dir = args.output_dir.resolve()
     if args.output_dir == allowed_root or not args.output_dir.is_relative_to(allowed_root):
@@ -98,18 +121,38 @@ def main() -> int:
         timeline.commit()
         stage, robot, viewport, scene_metadata = build_scene(update, args.asset_usd,
                                                            ground_size=80.0 if args.controller == "walk" else 10.0)
+        if args.robot == "unitree12" and robot.num_dofs != 12:
+            raise ValueError("--robot unitree12 requires the imported 12-DOF articulation")
+        if args.robot == "unitree12":
+            scene_metadata["variant"] = "G1_12dof_URDF"
+        elif args.robot == "unitree29":
+            from g1_urdf_config import URDF_MODELS
+
+            model = URDF_MODELS["unitree29"]
+            if robot.num_dofs != len(model.joint_names) or set(robot.dof_names) != set(model.joint_names):
+                raise ValueError("--robot unitree29 requires the official mode-15 articulation")
+            scene_metadata["variant"] = model.variant
         controller = None
         if args.controller == "stand":
             from g1_standing import StandingController, StandingMonitor
 
             controller = StandingController(robot)
         elif args.controller == "walk":
-            from g1_policy import DEFAULT_POLICY_PATH
-            from g1_walking import WalkingController
             from g1_walk_validation import WalkingMonitor
 
-            controller = WalkingController(robot, args.policy_path or DEFAULT_POLICY_PATH, tuple(args.command),
-                                           ground_paths=scene_metadata["ground_collision_paths"])
+            if args.robot == "unitree29":
+                from g1_onnx_policy import DEFAULT_POLICY_PATH
+                from g1_onnx_walking import OnnxWalkingController
+
+                controller = OnnxWalkingController(robot, args.policy_path or DEFAULT_POLICY_PATH, tuple(args.command),
+                                                   ground_paths=scene_metadata["ground_collision_paths"])
+            else:
+                from g1_policy import DEFAULT_POLICY_PATH
+                from g1_walking import WalkingController
+
+                controller = WalkingController(robot, args.policy_path or DEFAULT_POLICY_PATH, tuple(args.command),
+                                               ground_paths=scene_metadata["ground_collision_paths"])
+                scene_metadata["variant"] = controller.model.variant
         SimulationManager.setup_simulation(dt=args.dt, device="cpu")
         SimulationManager.enable_fabric(False)
         SimulationManager.initialize_physics()
@@ -148,6 +191,7 @@ def main() -> int:
             monitor = WalkingMonitor(initial_state, args.command)
         last_state = initial_state
         video_result = None
+        joint_control_result = None
 
         def capture(path, state):
             if args.controller == "walk":
@@ -161,7 +205,13 @@ def main() -> int:
         with ExitStack() as stack:
             writer = stack.enter_context(StateWriter(args.output_dir / "states.csv", dof_names))
             foot_writer = None
+            control_writer = None
             if args.controller == "walk":
+                from g1_control_outputs import ControlWriter
+                from g1_policy import LEG_NAMES
+
+                control_names = controller.control_names if args.robot == "unitree29" else LEG_NAMES
+                control_writer = stack.enter_context(ControlWriter(args.output_dir / "joint-control.csv", control_names))
                 foot_writer = csv.writer(stack.enter_context((args.output_dir / "feet.csv").open("x", newline="")))
                 foot_writer.writerow(["step", "simulation_time_s"] +
                     [f"{side}_{value}" for side in ("left", "right")
@@ -195,7 +245,9 @@ def main() -> int:
             screenshot(0)
             for step in range(1, args.steps + 1):
                 if controller is not None:
-                    controller.apply(last_state)
+                    command = controller.apply(last_state)
+                    if control_writer is not None:
+                        control_writer.write(command)
                 SimulationManager.step(steps=1)
                 last_state = sample(step)
                 writer.write(last_state)
@@ -209,6 +261,8 @@ def main() -> int:
                 if step % progress_interval == 0:
                     print(f"G1_PHYSICS_PROGRESS step={step} time={last_state.simulation_time:.6f} z={last_state.position[2]:.4f}", flush=True)
             rows = writer.rows
+            if control_writer is not None:
+                joint_control_result = control_writer.summary()
             if recorder is not None:
                 video_result = recorder.finish()
 
@@ -223,7 +277,7 @@ def main() -> int:
             raise RuntimeError("USD scene export failed")
         files = ["states.csv", "scene.usda", "initial.png", "mid.png", "final.png"]
         if args.controller == "walk":
-            files.append("feet.csv")
+            files.extend(["feet.csv", "joint-control.csv"])
         if video_result is not None:
             files.extend(["simulation.mp4", "video-frames.csv", "video-encoding.log"])
         manifest = {name: {"bytes": (args.output_dir / name).stat().st_size,
@@ -240,6 +294,7 @@ def main() -> int:
             "controller": controller.metadata() if controller is not None else {"name": "none"},
             "standing": control_result if args.controller == "stand" else None,
             "walking": control_result if args.controller == "walk" else None, "video": video_result,
+            "joint_control": joint_control_result,
             "source_sha256": {path.name: file_digest(path) for path in Path(__file__).parent.glob("g1_*.py")},
             "runner_sha256": file_digest(Path(__file__)),
             "acceptance": ("Unitree policy walking: floating base, gravity, uprightness, body velocity tracking, "
