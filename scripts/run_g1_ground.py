@@ -1,4 +1,4 @@
-"""Run bounded G1 standing or Unitree walking on a collision ground.
+"""Run Mode-15 ONNX walking on a collision ground, recording measured evidence.
 
 The shell launcher supplies the isolated runtime. Scene creation and file output
 are delegated to g1_scene and g1_outputs; this file owns application lifecycle,
@@ -19,69 +19,44 @@ from importlib.metadata import version
 from pathlib import Path
 
 from g1_outputs import StateSample, StateWriter, capture_png, combine_root_velocities, file_digest, package_results, write_json
+from g1_onnx_policy import DEFAULT_POLICY_PATH
+from g1_urdf_config import ASSET_PATH, JOINT_NAMES
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--portable-root", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
-    parser.add_argument("--steps", type=int, help="Default: 5000 walking, 2000 standing, 600 scene-check steps")
-    parser.add_argument("--dt", type=float, help="Default: 0.002 s walking, 0.005 s standing, 1/60 s scene check")
-    parser.add_argument("--asset-usd", help="Optional local or remote G1 USD override")
-    parser.add_argument("--robot", choices=("nvidia", "unitree12", "unitree29"), default="nvidia",
-                        help="NVIDIA G1_23dof (default), official 12-DOF G1, or official 29-DOF mode 15")
-    parser.add_argument("--controller", choices=("walk", "stand", "none"), default="stand")
-    parser.add_argument("--command", nargs=3, type=float, default=(0.5, 0.0, 0.0),
-                        metavar=("VX", "VY", "YAW_RATE"), help="Walking body-frame velocity: m/s, m/s, rad/s")
-    parser.add_argument("--policy-path", type=Path, help="Verified official motion.pt or Mode-15 policy.onnx; defaults to pinned cache")
-    parser.add_argument("--video", action="store_true", help="Record a measured 25 fps, 1x playback MP4")
+    parser.add_argument("--controller", choices=("walk", "none"), default="walk",
+                        help="ONNX walking (default), or a short model-loading check")
+    parser.add_argument("--steps", type=int, help="Default: 5000 walking or 20 loading-check steps")
+    parser.add_argument("--dt", type=float, default=.002, help="Physics interval; walking requires 0.002 s")
+    parser.add_argument("--asset-usd", type=Path, default=ASSET_PATH, help="Local Mode-15 USD")
+    parser.add_argument("--policy-path", type=Path, default=DEFAULT_POLICY_PATH, help="Verified official policy.onnx")
+    parser.add_argument("--command", nargs=3, type=float, default=(.5, 0., 0.),
+                        metavar=("VX", "VY", "YAW_RATE"), help="Body-frame velocity: m/s, m/s, rad/s")
+    parser.add_argument("--video", action="store_true", help="Record a measured 25 fps, 1x MP4")
     args = parser.parse_args()
     if args.steps is None:
-        args.steps = {"walk": 5000, "stand": 2000, "none": 600}[args.controller]
-    if args.dt is None:
-        args.dt = {"walk": 0.002, "stand": 0.005, "none": 1.0 / 60.0}[args.controller]
-    maximum_steps = {"walk": 30000, "stand": 12000, "none": 3600}[args.controller]
+        args.steps = 5000 if args.controller == "walk" else 20
+    maximum_steps = 30000 if args.controller == "walk" else 3600
     if not 2 <= args.steps <= maximum_steps:
         parser.error(f"--steps must be between 2 and {maximum_steps}")
-    if not math.isfinite(args.dt) or not 1.0 / 1000.0 <= args.dt <= 1.0 / 30.0:
+    if not math.isfinite(args.dt) or not .001 <= args.dt <= 1/30:
         parser.error("--dt must be finite and between 1/1000 and 1/30 seconds")
-    if args.controller == "stand" and args.steps * args.dt < 5.0:
-        parser.error("Standing validation requires at least 5 seconds; use --controller none for shorter scene checks")
-    if args.controller == "stand" and args.dt > 0.005:
-        parser.error("Standing control requires --dt <= 0.005 (at least 200 Hz physics)")
     if args.controller == "walk":
-        if not math.isclose(args.dt, 0.002, abs_tol=1e-12) or args.steps * args.dt < 5:
-            parser.error("Official walking policy requires --dt 0.002 and at least 5 seconds")
+        if not math.isclose(args.dt, .002, abs_tol=1e-12) or args.steps*args.dt < 5:
+            parser.error("Official walking requires --dt 0.002 and at least 5 seconds")
         if (not all(math.isfinite(value) for value in args.command)
-                or not -0.5 <= args.command[0] <= 0.8 or abs(args.command[1]) > 0.3 or abs(args.command[2]) > 0.5):
-            parser.error("Walking command bounds: VX [-0.5,0.8], VY [-0.3,0.3], YAW_RATE [-0.5,0.5]")
+                or not -.5 <= args.command[0] <= .8 or abs(args.command[1]) > .3 or abs(args.command[2]) > .2):
+            parser.error("Walking command bounds: VX [-0.5,0.8], VY [-0.3,0.3], YAW_RATE [-0.2,0.2]")
     if args.video:
-        interval = round(1 / (25 * args.dt))
-        if interval < 1 or not math.isclose(interval * args.dt * 25, 1, abs_tol=1e-9) or args.steps % interval:
+        interval = round(1/(25*args.dt))
+        if interval < 1 or not math.isclose(interval*args.dt*25, 1, abs_tol=1e-9) or args.steps % interval:
             parser.error("25 fps video requires dt and steps divisible by the 0.04 s frame interval")
-    if args.asset_usd is not None and not args.asset_usd.strip():
-        parser.error("--asset-usd must not be empty")
-    if args.robot == "unitree12":
-        if args.controller == "stand":
-            parser.error("The 12-DOF model supports --controller walk or none")
-        if args.asset_usd is None:
-            from g1_models import DEFAULT_UNITREE_USD
-
-            if not DEFAULT_UNITREE_USD.is_file():
-                parser.error("Import the official asset with scripts/import_g1_12dof.py first")
-            args.asset_usd = str(DEFAULT_UNITREE_USD)
-    elif args.robot == "unitree29":
-        if args.controller == "stand":
-            parser.error("Mode 15 supports --controller walk or none")
-        if args.controller == "walk" and abs(args.command[2]) > .2:
-            parser.error("Official Mode-15 ONNX deployment requires |YAW_RATE| <= 0.2")
-        if args.asset_usd is None:
-            from g1_urdf_config import URDF_MODELS
-
-            asset = URDF_MODELS["unitree29"].asset_path
-            if not asset.is_file():
-                parser.error("Import the official asset with scripts/import_g1_29dof.py first")
-            args.asset_usd = str(asset)
+    args.asset_usd = args.asset_usd.resolve()
+    if not args.asset_usd.is_file():
+        parser.error("Mode-15 USD missing; run scripts/import_g1_29dof.py first")
     allowed_root = Path(__file__).resolve().parents[1] / ".runtime/isaacsim-6.0.1/outputs"
     args.output_dir = args.output_dir.resolve()
     if args.output_dir == allowed_root or not args.output_dir.is_relative_to(allowed_root):
@@ -119,40 +94,17 @@ def main() -> int:
         timeline = omni.timeline.get_timeline_interface()
         timeline.set_auto_update(False)
         timeline.commit()
-        stage, robot, viewport, scene_metadata = build_scene(update, args.asset_usd,
+        stage, robot, viewport, scene_metadata = build_scene(update, str(args.asset_usd),
                                                            ground_size=80.0 if args.controller == "walk" else 10.0)
-        if args.robot == "unitree12" and robot.num_dofs != 12:
-            raise ValueError("--robot unitree12 requires the imported 12-DOF articulation")
-        if args.robot == "unitree12":
-            scene_metadata["variant"] = "G1_12dof_URDF"
-        elif args.robot == "unitree29":
-            from g1_urdf_config import URDF_MODELS
-
-            model = URDF_MODELS["unitree29"]
-            if robot.num_dofs != len(model.joint_names) or set(robot.dof_names) != set(model.joint_names):
-                raise ValueError("--robot unitree29 requires the official mode-15 articulation")
-            scene_metadata["variant"] = model.variant
+        if robot.num_dofs != len(JOINT_NAMES) or set(robot.dof_names) != set(JOINT_NAMES):
+            raise ValueError("Expected the official Mode-15 articulation with 29 named joints")
         controller = None
-        if args.controller == "stand":
-            from g1_standing import StandingController, StandingMonitor
-
-            controller = StandingController(robot)
-        elif args.controller == "walk":
+        if args.controller == "walk":
+            from g1_onnx_walking import OnnxWalkingController
             from g1_walk_validation import WalkingMonitor
 
-            if args.robot == "unitree29":
-                from g1_onnx_policy import DEFAULT_POLICY_PATH
-                from g1_onnx_walking import OnnxWalkingController
-
-                controller = OnnxWalkingController(robot, args.policy_path or DEFAULT_POLICY_PATH, tuple(args.command),
-                                                   ground_paths=scene_metadata["ground_collision_paths"])
-            else:
-                from g1_policy import DEFAULT_POLICY_PATH
-                from g1_walking import WalkingController
-
-                controller = WalkingController(robot, args.policy_path or DEFAULT_POLICY_PATH, tuple(args.command),
+            controller = OnnxWalkingController(robot, args.policy_path, tuple(args.command),
                                                ground_paths=scene_metadata["ground_collision_paths"])
-                scene_metadata["variant"] = controller.model.variant
         SimulationManager.setup_simulation(dt=args.dt, device="cpu")
         SimulationManager.enable_fabric(False)
         SimulationManager.initialize_physics()
@@ -162,8 +114,7 @@ def main() -> int:
             raise RuntimeError("G1 physics articulation failed to initialize")
         if controller is not None:
             controller.initialize()
-            scene_metadata.update({"locomotion_or_balance_controller": True,
-                                   "standing_success_not_an_acceptance_condition": False})
+            scene_metadata["controller_enabled"] = True
             print(f"G1_CONTROLLER_INITIALIZED={args.controller}", flush=True)
         dof_names = list(robot.dof_names)
         initial_time = SimulationManager.get_simulation_time()
@@ -185,9 +136,7 @@ def main() -> int:
         screenshots = []
         initial_state = sample(0)
         monitor = None
-        if args.controller == "stand":
-            monitor = StandingMonitor(initial_state, controller.targets)
-        elif args.controller == "walk":
+        if args.controller == "walk":
             monitor = WalkingMonitor(initial_state, args.command)
         last_state = initial_state
         video_result = None
@@ -208,9 +157,7 @@ def main() -> int:
             control_writer = None
             if args.controller == "walk":
                 from g1_control_outputs import ControlWriter
-                from g1_policy import LEG_NAMES
-
-                control_names = controller.control_names if args.robot == "unitree29" else LEG_NAMES
+                control_names = controller.control_names
                 control_writer = stack.enter_context(ControlWriter(args.output_dir / "joint-control.csv", control_names))
                 foot_writer = csv.writer(stack.enter_context((args.output_dir / "feet.csv").open("x", newline="")))
                 foot_writer.writerow(["step", "simulation_time_s"] +
@@ -223,8 +170,6 @@ def main() -> int:
                     foot_writer.writerow([state.step, state.simulation_time,
                                           *positions[0], *forces[0], *positions[1], *forces[1]])
                     monitor.observe(state, positions, forces)
-                elif monitor is not None:
-                    monitor.observe(state)
 
             recorder = None
             if args.video:
@@ -292,7 +237,6 @@ def main() -> int:
             "final_root_position_m": list(last_state.position), "screenshots": screenshots,
             "files": manifest, "scene_has_external_asset_references": True,
             "controller": controller.metadata() if controller is not None else {"name": "none"},
-            "standing": control_result if args.controller == "stand" else None,
             "walking": control_result if args.controller == "walk" else None, "video": video_result,
             "joint_control": joint_control_result,
             "source_sha256": {path.name: file_digest(path) for path in Path(__file__).parent.glob("g1_*.py")},
@@ -300,9 +244,6 @@ def main() -> int:
             "acceptance": ("Unitree policy walking: floating base, gravity, uprightness, body velocity tracking, "
                            "and repeated unloaded foot swings followed by measured contact verified."
                            if args.controller == "walk" else
-                           "Joint PD standing on flat ground with gravity and a floating base; "
-                           "height, tilt, drift, settled joint tracking and root speeds verified."
-                           if controller is not None else
                            "Scene loading, collision, finite states, time stepping and image capture only."),
         })
         archive = package_results(args.output_dir, [*files, "summary.json"])

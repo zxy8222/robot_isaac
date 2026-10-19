@@ -6,7 +6,7 @@ import math
 
 import numpy as np
 
-from g1_policy import world_to_body
+from g1_math import world_to_body
 
 
 class WalkingMonitor:

@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from g1_onnx_policy import DEFAULT_POLICY_PATH, Deployment, G1OnnxPolicy, named_indices
 from g1_onnx_walking import mode15_limits
 from g1_outputs import StateSample
-from g1_urdf_config import MODE15_JOINTS
+from g1_urdf_config import JOINT_NAMES
 
 
 class TestOfficialDeployment(unittest.TestCase):
@@ -28,13 +28,13 @@ class TestOfficialDeployment(unittest.TestCase):
         self.assertEqual(deployment.motor_names[1], "left_hip_roll_joint")
 
     def test_unknown_missing_or_duplicate_joints_cannot_silently_map(self):
-        for names in (list(MODE15_JOINTS)[:-1], list(MODE15_JOINTS)+["finger_joint"],
-                      list(MODE15_JOINTS)[:-1]+[MODE15_JOINTS[0]]):
+        for names in (list(JOINT_NAMES)[:-1], list(JOINT_NAMES)+["finger_joint"],
+                      list(JOINT_NAMES)[:-1]+[JOINT_NAMES[0]]):
             with self.subTest(names=names), self.assertRaises(ValueError):
-                named_indices(names, MODE15_JOINTS)
+                named_indices(names, JOINT_NAMES)
 
     def test_original_mode15_torque_and_velocity_caps_follow_names(self):
-        names = list(MODE15_JOINTS)[::-1]
+        names = list(JOINT_NAMES)[::-1]
         limits = mode15_limits(names)
         for side in ("left", "right"):
             for joint in ("ankle_pitch", "ankle_roll"):
@@ -46,7 +46,7 @@ class TestOfficialDeployment(unittest.TestCase):
 
 
 class TestOfficialOnnx(unittest.TestCase):
-    def policy(self, names=MODE15_JOINTS, command=(.5, 0, 0)):
+    def policy(self, names=JOINT_NAMES, command=(.5, 0, 0)):
         return G1OnnxPolicy(DEFAULT_POLICY_PATH, list(names), command)
 
     def state(self, policy):
@@ -55,7 +55,7 @@ class TestOfficialOnnx(unittest.TestCase):
         return StateSample(0, 0., [0, 0, .8], [1, 0, 0, 0], [0.]*6, q, np.zeros(29))
 
     def test_dof_permutation_preserves_observation_action_and_named_targets(self):
-        a, b = self.policy(), self.policy(MODE15_JOINTS[::-1])
+        a, b = self.policy(), self.policy(JOINT_NAMES[::-1])
         sa, sb = self.state(a), self.state(b)
         for step in range(4):
             qa, qb = np.asarray(sa.joint_positions).copy(), np.asarray(sb.joint_positions).copy()
@@ -96,7 +96,7 @@ class TestOfficialOnnx(unittest.TestCase):
             path = Path(directory)/"policy.onnx"
             path.write_bytes(b"corrupt")
             with self.assertRaises(ValueError):
-                G1OnnxPolicy(path, list(MODE15_JOINTS), (.5,0,0))
+                G1OnnxPolicy(path, list(JOINT_NAMES), (.5,0,0))
         with self.assertRaises(ValueError):
             self.policy(command=(.5,0,.3))
 

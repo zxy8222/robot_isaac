@@ -7,13 +7,12 @@ import numpy as np
 
 from g1_control_outputs import ControlSample
 from g1_onnx_policy import CONFIG_SHA256, G1OnnxPolicy, POLICY_SHA256, SOURCE_URL, verified_file
-from g1_urdf_config import URDF_MODELS
+import g1_urdf_config as asset
 
 
 def mode15_limits(names):
     """Return original URDF limits in the requested *named* order."""
-    model = URDF_MODELS["unitree29"]
-    source = ET.parse(verified_file(model.urdf_path, model.urdf_sha256)).getroot()
+    source = ET.parse(verified_file(asset.URDF_PATH, asset.URDF_SHA256)).getroot()
     joints = {j.get("name"): j for j in source.findall("joint") if j.get("type") != "fixed"}
     if len(names) != 29 or len(set(names)) != 29 or set(names) != set(joints):
         raise ValueError("The Mode-15 controller requires all 29 named joints")
@@ -26,7 +25,7 @@ def contact_metadata(robot, ground_paths):
     from pxr import PhysxSchema, Usd, UsdGeom, UsdPhysics, UsdShade
 
     stage = robot.prims[0].GetStage()
-    colliders = [p for p in Usd.PrimRange(stage.GetPrimAtPath("/World/G1"), Usd.TraverseInstanceProxies())
+    colliders = [p for p in Usd.PrimRange(stage.GetPrimAtPath(asset.ROBOT_PATH), Usd.TraverseInstanceProxies())
                  if p.HasAPI(UsdPhysics.CollisionAPI)]
     feet = [p for p in colliders if p.IsA(UsdGeom.Sphere) and "ankle_roll_link" in str(p.GetPath())]
 

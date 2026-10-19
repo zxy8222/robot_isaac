@@ -14,12 +14,10 @@ import isaacsim.core.experimental.utils.stage as stage_utils
 import omni.usd
 from isaacsim.core.experimental.objects import GroundPlane
 from isaacsim.core.experimental.prims import Articulation
-from isaacsim.storage.native import get_assets_root_path
 from omni.kit.viewport.utility import get_active_viewport
 from pxr import Gf, PhysxSchema, Usd, UsdGeom, UsdLux, UsdPhysics
 
-ASSET_RELATIVE_PATH = "Isaac/Robots/Unitree/G1_23dof/g1.usd"
-ROBOT_PATH = "/World/G1"
+from g1_urdf_config import ASSET_PATH, ROBOT_PATH, VARIANT
 GROUND_PATH = "/World/Ground"
 CAMERA_PATH = "/World/OverviewCamera"
 
@@ -35,7 +33,7 @@ def wait_for_assets(update: Callable[[], None], timeout: float = 600.0) -> None:
         update()
 
 
-def build_scene(update: Callable[[], None], asset_usd: str | None = None, *, ground_size: float = 10.0) -> tuple[Usd.Stage, Articulation, object, dict[str, object]]:
+def build_scene(update: Callable[[], None], asset_usd: str | None = None, *, ground_size: float = 80.0) -> tuple[Usd.Stage, Articulation, object, dict[str, object]]:
     stage = omni.usd.get_context().get_stage()
     if stage is None:
         raise RuntimeError("SimulationApp did not create a USD stage")
@@ -60,7 +58,7 @@ def build_scene(update: Callable[[], None], asset_usd: str | None = None, *, gro
     for path in ground_colliders:
         UsdPhysics.CollisionAPI(stage.GetPrimAtPath(path)).CreateCollisionEnabledAttr().Set(True)
 
-    resolved_asset = asset_usd or f"{get_assets_root_path(skip_check=True).rstrip('/')}/{ASSET_RELATIVE_PATH}"
+    resolved_asset = asset_usd or str(ASSET_PATH)
     print(f"G1_ASSET_LOADING={resolved_asset}", flush=True)
     robot_prim = stage_utils.add_reference_to_stage(usd_path=resolved_asset, path=ROBOT_PATH)
     wait_for_assets(update)
@@ -100,7 +98,7 @@ def build_scene(update: Callable[[], None], asset_usd: str | None = None, *, gro
     viewport.texture_resolution = (1280, 720)
     metadata = {
         "asset_usd": resolved_asset,
-        "variant": "G1_23dof",
+        "variant": VARIANT,
         "robot_path": ROBOT_PATH,
         "ground_path": GROUND_PATH,
         "ground_collision_paths": ground_colliders,
@@ -112,8 +110,7 @@ def build_scene(update: Callable[[], None], asset_usd: str | None = None, *, gro
         "gravity_m_s2": 9.81,
         "camera_path": CAMERA_PATH,
         "physics_device": "cpu",
-        "locomotion_or_balance_controller": False,
-        "standing_success_not_an_acceptance_condition": True,
+        "controller_enabled": False,
     }
     print(f"G1_SCENE_CREATED dofs={robot.num_dofs} colliders={len(robot_colliders)}", flush=True)
     return stage, robot, viewport, metadata

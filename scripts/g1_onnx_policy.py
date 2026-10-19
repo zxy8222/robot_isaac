@@ -15,7 +15,7 @@ import numpy as np
 import yaml
 
 from g1_outputs import file_digest
-from g1_policy import world_to_body
+from g1_math import world_to_body
 
 SOURCE_COMMIT = "4960b84732b0c2ec593dccbfe963fda1bcd7b1e3"
 SOURCE_URL = f"https://github.com/unitreerobotics/unitree_rl_lab/tree/{SOURCE_COMMIT}"
